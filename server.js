@@ -1,16 +1,23 @@
 // Barber booking app - zero dependencies. Run: node server.js
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const PORT = process.env.PORT || 3000;
-const TZ = process.env.SHOP_TZ || 'Europe/Sarajevo';
+const TZ = process.env.SHOP_TZ || 'Europe/Belgrade';
 const SLOT_MIN = 30;
 const DATA_DIR = process.env.DATA_DIR || __dirname;           // optional: persistent disk folder
 const DATA = path.join(DATA_DIR, 'data.json');
 const UP_URL = process.env.UPSTASH_REDIS_REST_URL, UP_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN; // free online storage
 const KEY = 'barber-frki-data';
-const DAYS_AHEAD = 21;
+const DAYS_SHOWN = 14;   // how many bookable days clients see; full/closed/past days drop out and the next day is added
 
-const defaultHours = { 0: null, 1: ['09:00','17:00'], 2: ['09:00','17:00'], 3: ['09:00','17:00'], 4: ['09:00','17:00'], 5: ['09:00','17:00'], 6: null };
-const seed = () => ({ barbers: [{ id: 'b1', name: 'Frki', pin: '1111', hours: defaultHours, daysOff: [], blocked: [] }], bookings: [] });
+// default working hours: Mon closed, Tue-Sun 11-20 (changeable in admin)
+const defaultHours = { 0: ['11:00','20:00'], 1: null, 2: ['11:00','20:00'], 3: ['11:00','20:00'], 4: ['11:00','20:00'], 5: ['11:00','20:00'], 6: ['11:00','20:00'] };
+const defaultServices = [
+  { id: 's1', name: 'Fade', price: 1400 }, { id: 's2', name: 'Obično šišanje', price: 1000 },
+  { id: 's3', name: 'Fazoniranje brade', price: 800 }, { id: 's4', name: 'Skidanje brade', price: 500 },
+  { id: 's5', name: 'Brijanje glave', price: 950 }, { id: 's6', name: 'Brijanje lica', price: 950 },
+  { id: 's7', name: 'Farbanje brade', price: 1300 },
+];
+const seed = () => ({ barbers: [{ id: 'b1', name: 'Marko', pin: '115071', hours: defaultHours, daysOff: [], blocked: [] }], bookings: [], services: defaultServices });
 
 async function upstash(cmd) {
   const r = await fetch(UP_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + UP_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd) });
@@ -38,14 +45,42 @@ async function init() {
   const raw = await readStore();
   db = raw ? JSON.parse(raw) : seed();
   const today = nowInShop().date, old = new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10);
+  db.services = db.services || defaultServices;
   db.bookings = db.bookings.filter(b => b.date >= old);                   // keep storage small
   db.barbers.forEach(b => { b.blocked = (b.blocked || []).filter(x => x.date >= today); b.daysOff = b.daysOff.filter(d => d >= today); });
-  if (/^\d{4,8}$/.test(process.env.BARBER_PIN || '')) db.barbers[0].pin = process.env.BARBER_PIN; // set PIN from Render settings
+  const pin = process.env.BARBER_PIN || '115071';                           // BARBER_PIN env var overrides the default
+  if (/^\d{4,12}$/.test(pin)) db.barbers[0].pin = pin;
   await save();
   console.log('Storage:', UP_URL && UP_TOKEN ? 'Upstash (online)' : DATA);
 }
 
-const sessions = new Map(); // token -> barberId
+const TG_API = process.env.TELEGRAM_API || 'https://api.telegram.org';
+async function tgSend(token, chat, text, tries = 3) { // retries when Telegram says "Too Many Requests: retry after N"
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await fetch(`${TG_API}/bot${token}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text }) });
+      if (r.ok) return;
+      const j = await r.json().catch(() => ({}));
+      console.error('Telegram error', r.status, JSON.stringify(j));
+      if (r.status === 429 && i < tries - 1) { await new Promise(x => setTimeout(x, ((j.parameters && j.parameters.retry_after) || 30) * 1000 + 1000)); continue; }
+      return;
+    } catch (e) { console.error('Telegram failed:', e.message); return; }
+  }
+}
+function notify(text) { // Telegram message to the barber (optional; needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
+  const t = (process.env.TELEGRAM_BOT_TOKEN || '').trim(), c = (process.env.TELEGRAM_CHAT_ID || '').trim();
+  if (!t || !c) return;
+  c.split(',').map(x => x.trim()).filter(Boolean).forEach(chat => tgSend(t, chat, text));   // TELEGRAM_CHAT_ID may hold several ids, comma separated
+}
+const DAYN = ['Ned', 'Pon', 'Uto', 'Sri', 'Čet', 'Pet', 'Sub'];
+const niceDate = d => { const x = new Date(d + 'T12:00:00Z'); return `${DAYN[x.getUTCDay()]}, ${x.getUTCDate()}.${x.getUTCMonth() + 1}.`; };
+
+const sessions = new Map(); // token -> { id, exp }
+const SESSION_MS = 12 * 3600e3;
+const fails = new Map();    // key -> { n, until }  (login lockout)
+const isLocked = k => { const f = fails.get(k); if (f && f.until && f.until <= Date.now()) { fails.delete(k); return false; } return !!(f && f.until); };
+const addFail = (k, max) => { const f = fails.get(k) || { n: 0, until: 0 }; f.n++; if (f.n >= max) f.until = Date.now() + 15 * 60e3; fails.set(k, f); };
+const clientIp = req => String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
 
 function nowInShop() {
   const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: TZ, hourCycle: 'h23',
@@ -79,10 +114,21 @@ function slotsFor(barber, date) {
   return allSlots(barber, date).filter(t => !taken.has(t) && !isBlocked(barber, date, t));
 }
 
+// next days that still have at least one free slot; full, closed and past days are skipped
+function bookableDates() {
+  const out = [], start = new Date(nowInShop().date + 'T12:00:00Z');
+  for (let i = 0; i < 90 && out.length < DAYS_SHOWN; i++) {
+    const d = new Date(start); d.setUTCDate(d.getUTCDate() + i);
+    const ds = d.toISOString().slice(0, 10);
+    if (db.barbers.some(b => slotsFor(b, ds).length)) out.push(ds);
+  }
+  return out;
+}
+
 const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 const body = req => new Promise(r => { let s = ''; req.on('data', c => { s += c; if (s.length > 1e5) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(s || '{}')); } catch { r({}); } }); });
 const clean = (s, n) => String(s || '').replace(/[<>]/g, '').trim().slice(0, n);
-const auth = req => sessions.get((req.headers.authorization || '').replace('Bearer ', ''));
+const auth = req => { const x = sessions.get((req.headers.authorization || '').replace('Bearer ', '')); return x && x.exp > Date.now() ? x.id : undefined; };
 
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/manifest+json', '.png': 'image/png' };
 
@@ -92,8 +138,8 @@ const server = http.createServer(async (req, res) => {
   try {
     // ---- public API ----
     if (p === '/api/barbers' && req.method === 'GET')
-      return send(res, 200, { tz: TZ, today: nowInShop().date, daysAhead: DAYS_AHEAD, slotMinutes: SLOT_MIN,
-        barbers: db.barbers.map(b => ({ id: b.id, name: b.name })) });
+      return send(res, 200, { tz: TZ, today: nowInShop().date, dates: bookableDates(), slotMinutes: SLOT_MIN,
+        services: db.services, barbers: db.barbers.map(b => ({ id: b.id, name: b.name, hours: b.hours })) });
 
     if (p === '/api/slots' && req.method === 'GET') {
       const b = db.barbers.find(x => x.id === url.searchParams.get('barber'));
@@ -104,22 +150,40 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/book' && req.method === 'POST') {
       const d = await body(req);
       const b = db.barbers.find(x => x.id === d.barberId);
-      const name = clean(d.name, 60), phone = clean(d.phone, 30);
+      const name = clean(d.name, 60), phone = clean(d.phone, 30), svc = db.services.find(x => x.id === d.serviceId);
+      if (!svc) return send(res, 400, { error: 'Izaberite uslugu.' });
       if (!b || !name || !phone) return send(res, 400, { error: 'Unesite ime i broj telefona.' });
       if (!slotsFor(b, d.date).includes(d.time)) return send(res, 409, { error: 'Termin je upravo zauzet. Izaberite drugi.' });
-      const booking = { id: crypto.randomUUID(), barberId: b.id, date: d.date, time: d.time, name, phone, createdAt: new Date().toISOString() };
+      const booking = { id: crypto.randomUUID(), barberId: b.id, date: d.date, time: d.time, name, phone, serviceId: svc.id, service: svc.name, price: svc.price, cancelToken: crypto.randomBytes(16).toString('hex'), createdAt: new Date().toISOString() };
       db.bookings.push(booking);
       try { await save(); } catch (e) { db.bookings = db.bookings.filter(x => x.id !== booking.id); return send(res, 503, { error: 'Greška pri čuvanju termina. Pokušajte ponovo.' }); }
-      return send(res, 200, { ok: true, booking: { ...booking, barber: b.name } });
+      notify(`🆕 Novi termin\n${niceDate(booking.date)} u ${booking.time}\n${name} · ${phone}\n${svc.name} (${svc.price} din)`);
+      return send(res, 200, { ok: true, token: booking.cancelToken, booking: { date: booking.date, time: booking.time, name: booking.name, barber: b.name, service: svc.name, price: svc.price } });
+    }
+
+    const findByToken = t => db.bookings.find(b => typeof t === 'string' && t.length === 32 && b.cancelToken === t);
+    if (p === '/api/booking' && req.method === 'GET') {
+      const b = findByToken(url.searchParams.get('t'));
+      if (!b || b.date < nowInShop().date) return send(res, 404, { error: 'Termin nije pronađen ili je već otkazan.' });
+      return send(res, 200, { date: b.date, time: b.time, name: b.name, service: b.service, barber: (db.barbers.find(x => x.id === b.barberId) || {}).name });
+    }
+    if (p === '/api/cancel' && req.method === 'POST') {
+      const d = await body(req), b = findByToken(d.token);
+      if (!b) return send(res, 404, { error: 'Termin nije pronađen ili je već otkazan.' });
+      db.bookings = db.bookings.filter(x => x !== b); await save();
+      notify(`❌ Klijent otkazao termin\n${niceDate(b.date)} u ${b.time}\n${b.name} · ${b.phone}${b.service ? '\n' + b.service : ''}`);
+      return send(res, 200, { ok: true });
     }
 
     // ---- admin API ----
     if (p === '/api/admin/login' && req.method === 'POST') {
-      const d = await body(req);
+      const d = await body(req), ip = 'ip:' + clientIp(req), bk = 'b:' + d.barberId;
+      if (isLocked(ip) || isLocked(bk)) return send(res, 429, { error: 'Previše pogrešnih pokušaja. Pokušajte ponovo za 15 minuta.' });
       const b = db.barbers.find(x => x.id === d.barberId);
-      if (!b || String(d.pin) !== b.pin) return send(res, 401, { error: 'Pogrešan PIN' });
+      if (!b || String(d.pin) !== b.pin) { addFail(ip, 5); addFail(bk, 25); return send(res, 401, { error: 'Pogrešan PIN' }); }
+      fails.delete(ip);
       const token = crypto.randomBytes(24).toString('hex');
-      sessions.set(token, b.id);
+      sessions.set(token, { id: b.id, exp: Date.now() + SESSION_MS });
       return send(res, 200, { token });
     }
     if (p.startsWith('/api/admin/')) {
@@ -130,7 +194,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/admin/me' && req.method === 'GET') {
         const today = nowInShop().date;
         const bookings = db.bookings.filter(b => b.barberId === me.id && b.date >= today)
-          .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+          .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)).map(({ cancelToken, ...rest }) => rest);
         return send(res, 200, { name: me.name, hours: me.hours, daysOff: me.daysOff.filter(d => d >= today), bookings, today });
       }
       if (p === '/api/admin/hours' && req.method === 'POST') {
@@ -176,7 +240,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ---- static ----
-    let f = p === '/' ? '/index.html' : p === '/admin' ? '/admin.html' : p;
+    let f = p === '/' ? '/index.html' : p === '/admin' ? '/admin.html' : p === '/cancel' ? '/cancel.html' : p;
     const file = path.join(__dirname, 'public', path.normalize(f));
     if (!file.startsWith(path.join(__dirname, 'public')) || !fs.existsSync(file)) { res.writeHead(404); return res.end('Not found'); }
     res.writeHead(200, { 'Content-Type': mime[path.extname(file)] || 'application/octet-stream' });
