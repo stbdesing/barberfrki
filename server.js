@@ -51,6 +51,7 @@ async function init() {
   const pin = process.env.BARBER_PIN || '115071';                           // BARBER_PIN env var overrides the default
   if (/^\d{4,12}$/.test(pin)) db.barbers[0].pin = pin;
   await save();
+  console.log('Telegram:', process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID ? 'configured (chat ' + process.env.TELEGRAM_CHAT_ID.trim() + ')' : 'NOT configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)');
   console.log('Storage:', UP_URL && UP_TOKEN ? 'Upstash (online)' : DATA);
 }
 
@@ -59,7 +60,7 @@ async function tgSend(token, chat, text, tries = 3) { // retries when Telegram s
   for (let i = 0; i < tries; i++) {
     try {
       const r = await fetch(`${TG_API}/bot${token}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text }) });
-      if (r.ok) return;
+      if (r.ok) { console.log('Telegram sent to chat', chat); return; }
       const j = await r.json().catch(() => ({}));
       console.error('Telegram error', r.status, JSON.stringify(j));
       if (r.status === 429 && i < tries - 1) { await new Promise(x => setTimeout(x, ((j.parameters && j.parameters.retry_after) || 30) * 1000 + 1000)); continue; }
@@ -69,7 +70,7 @@ async function tgSend(token, chat, text, tries = 3) { // retries when Telegram s
 }
 function notify(text) { // Telegram message to the barber (optional; needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
   const t = (process.env.TELEGRAM_BOT_TOKEN || '').trim(), c = (process.env.TELEGRAM_CHAT_ID || '').trim();
-  if (!t || !c) return;
+  if (!t || !c) { console.log('Telegram NOT configured: TELEGRAM_BOT_TOKEN', t ? 'set' : 'MISSING', '| TELEGRAM_CHAT_ID', c ? 'set' : 'MISSING'); return; }
   c.split(',').map(x => x.trim()).filter(Boolean).forEach(chat => tgSend(t, chat, text));   // TELEGRAM_CHAT_ID may hold several ids, comma separated
 }
 const DAYN = ['Ned', 'Pon', 'Uto', 'Sri', 'Čet', 'Pet', 'Sub'];
