@@ -1,0 +1,48 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Barber Frki - Admin</title><link rel="stylesheet" href="/style.css"><link rel="manifest" href="/manifest.json"><meta name="theme-color" content="#111111"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Barber"></head><body><div class="wrap">
+<img class="logo" src="/logo.png" alt="Barber Frki - Barber Shop"><h1>Admin panel</h1>
+<div id="login"><p class="sub">Prijavite se sa imenom i PIN-om.</p>
+<div class="row" id="who" style="margin:12px 0"></div><input id="pin" type="password" inputmode="numeric" placeholder="PIN"><div class="err" id="lerr"></div><button class="main" id="lgo">Prijava</button></div>
+<div id="panel" hidden>
+<p class="sub">Zdravo <b id="me"></b> · <button class="link" id="out">Odjava</button> · <a href="/" style="color:var(--mute)">Stranica za klijente</a></p>
+<h2>Predstojeći termini</h2><div class="card" id="bks"></div>
+<h2>Zatvori pojedinačne termine</h2><div class="card"><p class="sub" style="text-align:left;margin:0 0 10px">Izaberi datum pa dodirni slobodan termin da ga zatvoriš (klijenti ga neće vidjeti). Dodirni zatvoren termin da ga ponovo otvoriš.</p>
+<input type="date" id="dsel" style="margin-bottom:10px"><div class="row" id="dslots"></div><div class="err" id="derr"></div>
+<p class="sub" style="text-align:left;margin:10px 0 0;font-size:13px">⬜ slobodan &nbsp; <span style="color:#c98a84">▭ zatvoren</span> &nbsp; <span style="color:var(--gold)">● zakazan</span></p></div>
+<h2>Radno vrijeme</h2><div class="card"><div id="hours"></div><div class="err" id="herr"></div><button class="main" id="hsave" style="margin-top:12px">Sačuvaj</button></div>
+<h2>Slobodni dani</h2><div class="card"><div class="row" style="align-items:center"><input type="date" id="off"><button class="chip sm" id="offadd">Dodaj slobodan dan</button></div><div id="offs" style="margin-top:10px"></div></div>
+</div></div>
+<script>
+const $=id=>document.getElementById(id);let token=sessionStorage.getItem('t'),who=null;
+const names=['Nedjelja','Ponedjeljak','Utorak','Srijeda','Četvrtak','Petak','Subota'],order=[1,2,3,4,5,6,0];
+const fmtDate=d=>{const x=new Date(d+'T12:00:00Z');return ['Ned','Pon','Uto','Sri','Čet','Pet','Sub'][x.getUTCDay()]+', '+x.getUTCDate()+'. '+['jan','feb','mar','apr','maj','jun','jul','aug','sep','okt','nov','dec'][x.getUTCMonth()]};
+const api=async(p,body)=>{const r=await fetch(p,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token},body:body?JSON.stringify(body):undefined});
+ if(r.status===401&&token){sessionStorage.removeItem('t');location.reload()}return {ok:r.ok,d:await r.json()}};
+(async()=>{const c=await (await fetch('/api/barbers')).json();
+ c.barbers.forEach(b=>{const e=document.createElement('button');e.className='chip';e.textContent=b.name;e.onclick=()=>{who=b.id;[...$('who').children].forEach(x=>x.classList.remove('on'));e.classList.add('on')};$('who').append(e)});
+ if(c.barbers.length===1)$('who').firstChild.click();if(token)load()})();
+$('lgo').onclick=async()=>{$('lerr').textContent='';if(!who)return $('lerr').textContent='Izaberite ime.';let r;try{r=await fetch('/api/admin/login',{method:'POST',body:JSON.stringify({barberId:who,pin:$('pin').value})})}catch(e){return $('lerr').textContent='Nema veze sa serverom.'}const d=await r.json();
+ if(!r.ok)return $('lerr').textContent=d.error;token=d.token;sessionStorage.setItem('t',token);load()};
+$('out').onclick=()=>{sessionStorage.removeItem('t');location.reload()};
+async function load(){const {ok,d}=await api('/api/admin/me');if(!ok)return;$('login').hidden=true;$('panel').hidden=false;$('me').textContent=d.name;$('dsel').min=d.today;if(!$('dsel').value)$('dsel').value=d.today;loadDay();
+ $('bks').innerHTML=d.bookings.length?'':'<span class="empty">Još nema termina.</span>';
+ d.bookings.forEach(b=>{const r=document.createElement('div');r.className='bk';r.innerHTML=`<div><b>${fmtDate(b.date)} · ${b.time}</b><br><small></small></div>`;
+  r.querySelector('small').textContent=`${b.name} · ${b.phone}`;const x=document.createElement('button');x.className='chip sm';x.textContent='Otkaži';
+  x.onclick=async()=>{if(confirm('Otkaži this booking?')){await api('/api/admin/cancel',{id:b.id});load()}};r.append(x);$('bks').append(r)});
+ $('hours').innerHTML='';order.forEach(i=>{const h=d.hours[i];const r=document.createElement('div');r.className='day';
+  r.innerHTML=`<b>${names[i]}</b><label><input type="checkbox" ${h?'checked':''} style="width:auto;margin:0"> Radi</label><input type="time" value="${h?h[0]:'09:00'}"> do <input type="time" value="${h?h[1]:'17:00'}">`;r.dataset.i=i;$('hours').append(r)});
+ $('offs').innerHTML=d.daysOff.length?'':'<span class="empty">Nema</span>';
+ d.daysOff.sort().forEach(x=>{const r=document.createElement('div');r.className='bk';r.innerHTML=`<span>${fmtDate(x)}</span>`;const b=document.createElement('button');b.className='chip sm';b.textContent='Ukloni';b.onclick=async()=>{await api('/api/admin/dayoff',{date:x,off:false});load()};r.append(b);$('offs').append(r)})}
+
+async function loadDay(){const date=$('dsel').value;$('derr').textContent='';$('dslots').innerHTML='';if(!date)return;
+ const {ok,d}=await api('/api/admin/day?date='+date);if(!ok)return $('derr').textContent=d.error||'Greška';
+ if(!d.slots.length){$('dslots').innerHTML='<span class="empty">Taj dan nema termina (slobodan dan ili prošlo vrijeme).</span>';return}
+ d.slots.forEach(s=>{const b=document.createElement('button');b.className='chip sm '+(s.status==='closed'?'closed':s.status==='booked'?'booked':'');
+  b.textContent=s.time+(s.status==='booked'?' · '+s.name:'');
+  b.onclick=async()=>{if(s.status==='booked'){$('derr').textContent='Zakazano: '+s.name+' ('+s.phone+'). Otkaži ga gore u listi termina ako treba.';return}
+   const r=await api('/api/admin/block',{date,time:s.time,off:s.status==='free'});if(!r.ok)$('derr').textContent=r.d.error;loadDay()};$('dslots').append(b)})}
+$('dsel').onchange=loadDay;
+$('hsave').onclick=async()=>{const hours={};document.querySelectorAll('#hours .day').forEach(r=>{const[i,t]=[r.dataset.i,r.querySelectorAll('input')];hours[i]=t[0].checked?[t[1].value,t[2].value]:null});
+ const {ok,d}=await api('/api/admin/hours',{hours});$('herr').textContent=ok?'':d.error;if(ok){loadDay();$('hsave').textContent='Sačuvano ✔';setTimeout(()=>$('hsave').textContent='Sačuvaj',1500)}};
+$('offadd').onclick=async()=>{if(!$('off').value)return;await api('/api/admin/dayoff',{date:$('off').value,off:true});$('off').value='';load()};
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');</script></body></html>
