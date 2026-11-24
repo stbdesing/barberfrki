@@ -1,0 +1,54 @@
+<!doctype html><html lang="bs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Biser Cuts - Zakaži termin</title><link rel="stylesheet" href="/style.css"><link rel="manifest" href="/manifest.json"><meta name="theme-color" content="#f5f2ec"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Biser Cuts"></head><body><div class="wrap">
+<img class="logo" src="/logo.png" alt="Biser Cuts">
+
+<div id="viewBook">
+<div class="banner"><b>Zakaži svoj termin</b><span>Trajanje termina <span id="len"></span></span></div>
+<div id="mine" class="card" hidden style="margin:12px 0"></div>
+<div id="main">
+<h2>1 · Usluga</h2><div class="svcs" id="svcs"></div>
+<h2>2 · Frizer</h2><div class="row" id="barbers"></div>
+<h2>3 · Datum</h2><div class="row" id="dates"></div>
+<h2>4 · Vrijeme</h2><div class="row" id="slots"><span class="empty">Prvo izaberite datum.</span></div>
+<h2>5 · Vaši podaci</h2>
+<div class="card"><input id="name" placeholder="Ime i prezime" autocomplete="name"><input id="phone" placeholder="Broj telefona" type="tel" autocomplete="tel">
+<div class="err" id="err"></div><button class="main" id="go">Potvrdi termin</button></div>
+</div>
+<div id="done" class="card" hidden><h2 style="margin-top:0">Termin je zakazan ✔</h2><p id="sum"></p><p><a id="clink" href="#" style="color:var(--gold)">Otkaži ovaj termin</a><br><small class="sub" id="chint"></small></p><button class="link" onclick="location.reload()">Zakaži novi termin</button></div>
+</div>
+
+<p class="tag">Biser Cuts · Barber</p><div class="foot"><a href="https://maps.google.com/?q=Slavka+Miljkovi%C4%87a+90b" target="_blank" rel="noopener"><small>Adresa</small>Slavka Miljkovića 90b</a><a href="https://instagram.com/biser_cuts" target="_blank" rel="noopener"><small>Prati nas</small>@biser_cuts</a></div><p class="sub" style="margin-top:20px"><a href="/admin" style="color:var(--mute)">Prijava za frizere</a></p>
+</div>
+<script>
+const $=id=>document.getElementById(id);let cfg,sel={svc:null,barber:null,date:null,time:null};
+const fmtDate=d=>{const x=new Date(d+'T12:00:00Z');return ['Ned','Pon','Uto','Sri','Čet','Pet','Sub'][x.getUTCDay()]+', '+x.getUTCDate()+'. '+['jan','feb','mar','apr','maj','jun','jul','aug','sep','okt','nov','dec'][x.getUTCMonth()]};
+const price=n=>String(n).replace(/\B(?=(\d{3})+(?!\d))/g,'.')+' din';
+const mk=(txt,cls,fn)=>{const b=document.createElement('button');b.className=cls;b.textContent=txt;b.onclick=fn;return b};
+async function init(){cfg=await (await fetch('/api/barbers')).json();$('len').textContent=`${cfg.slotMinutes} min`;
+ cfg.services.forEach(s=>{const b=document.createElement('button');b.className='svc';b.innerHTML='<span></span><b></b>';b.children[0].textContent=s.name;b.children[1].textContent=price(s.price);
+  b.onclick=()=>{sel.svc=s;[...$('svcs').children].forEach(c=>c.classList.remove('on'));b.classList.add('on');check()};$('svcs').append(b)});
+ cfg.barbers.forEach(b=>$('barbers').append(mk(b.name,'chip',e=>{sel.barber=b;sel.time=null;mark('barbers',e.target);loadSlots()})));
+ if(cfg.barbers.length===1){$('barbers').firstChild.click()}
+ if(!cfg.dates.length)$('dates').innerHTML='<span class="empty">Trenutno nema slobodnih termina.</span>';
+ cfg.dates.forEach(s=>$('dates').append(mk(fmtDate(s),'chip sm',e=>{sel.date=s;sel.time=null;mark('dates',e.target);loadSlots()})));
+}
+function mark(id,el){[...$(id).children].forEach(c=>c.classList.remove('on'));el.classList.add('on');check()}
+async function loadSlots(){check();if(!sel.barber||!sel.date)return;
+ const r=await (await fetch(`/api/slots?barber=${sel.barber.id}&date=${sel.date}`)).json();$('slots').innerHTML='';
+ if(!r.slots.length){$('slots').innerHTML='<span class="empty">Nema slobodnih termina tog dana. Probajte drugi dan.</span>';return}
+ r.slots.forEach(t=>$('slots').append(mk(t,'chip sm',e=>{sel.time=t;mark('slots',e.target)})))}
+function check(){$('err').textContent=''}
+$('go').onclick=async()=>{$('err').textContent='';
+ if(!sel.svc)return $('err').textContent='Izaberite uslugu.';if(!sel.barber)return $('err').textContent='Izaberite frizera.';if(!sel.date)return $('err').textContent='Izaberite datum.';if(!sel.time)return $('err').textContent='Izaberite vrijeme (termin).';if(!$('name').value.trim()||!$('phone').value.trim())return $('err').textContent='Unesite ime i broj telefona.';
+ $('go').disabled=true;let r;try{r=await fetch('/api/book',{method:'POST',body:JSON.stringify({serviceId:sel.svc.id,barberId:sel.barber.id,date:sel.date,time:sel.time,name:$('name').value,phone:$('phone').value})})}catch(e){$('err').textContent='Nema veze sa serverom. Pokušajte ponovo.';$('go').disabled=false;return}
+ const d=await r.json();
+ if(!r.ok){$('err').textContent=d.error;$('go').disabled=false;if(r.status===409){sel.time=null;loadSlots()}return}
+ try{localStorage.setItem('myBooking',d.token)}catch(e){}
+ $('clink').href='/cancel?t='+d.token;$('chint').textContent='Sačuvajte ovaj link ako želite kasnije da otkažete.';
+ $('main').hidden=true;$('done').hidden=false;$('sum').textContent=`${d.booking.name}, zakazani ste kod ${d.booking.barber}: ${d.booking.service} (${price(d.booking.price)}), ${fmtDate(d.booking.date)} u ${d.booking.time}.`};
+init();
+(async()=>{let t;try{t=localStorage.getItem('myBooking')}catch(e){}if(!t)return;
+ const r=await fetch('/api/booking?t='+encodeURIComponent(t));if(!r.ok){try{localStorage.removeItem('myBooking')}catch(e){}return}
+ const d=await r.json();$('mine').hidden=false;$('mine').innerHTML='<b>Vaš termin:</b> <span></span><br><a style="color:var(--gold)">Otkaži termin</a>';
+ $('mine').querySelector('span').textContent=d.barber+', '+fmtDate(d.date)+' u '+d.time+(d.service?' · '+d.service:'');$('mine').querySelector('a').href='/cancel?t='+t})();
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');</script></body></html>

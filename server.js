@@ -6,18 +6,20 @@ const SLOT_MIN = 30;
 const DATA_DIR = process.env.DATA_DIR || __dirname;           // optional: persistent disk folder
 const DATA = path.join(DATA_DIR, 'data.json');
 const UP_URL = process.env.UPSTASH_REDIS_REST_URL, UP_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN; // free online storage
-const KEY = 'barber-frki-data';
+const KEY = 'biser-cuts-data';
 const DAYS_SHOWN = 14;   // how many bookable days clients see; full/closed/past days drop out and the next day is added
 
-// default working hours: Mon closed, Tue-Sun 11-20 (changeable in admin)
-const defaultHours = { 0: ['11:00','20:00'], 1: null, 2: ['11:00','20:00'], 3: ['11:00','20:00'], 4: ['11:00','20:00'], 5: ['11:00','20:00'], 6: ['11:00','20:00'] };
+// default working hours: Mon-Sat 09-20, Sun closed (the barber can change it in admin)
+const defaultHours = () => ({ 0: null, 1: ['09:00','20:00'], 2: ['09:00','20:00'], 3: ['09:00','20:00'], 4: ['09:00','20:00'], 5: ['09:00','20:00'], 6: ['09:00','20:00'] });
 const defaultServices = [
-  { id: 's1', name: 'Fade', price: 1400 }, { id: 's2', name: 'Obično šišanje', price: 1000 },
-  { id: 's3', name: 'Fazoniranje brade', price: 800 }, { id: 's4', name: 'Skidanje brade', price: 500 },
-  { id: 's5', name: 'Brijanje glave', price: 950 }, { id: 's6', name: 'Brijanje lica', price: 950 },
-  { id: 's7', name: 'Farbanje brade', price: 1300 },
+  { id: 's1', name: 'Fade', price: 800 }, { id: 's2', name: 'Klasično šišanje', price: 500 },
+  { id: 's3', name: 'Brada', price: 400 }, { id: 's4', name: 'Fade + brada', price: 1000 },
 ];
-const seed = () => ({ barbers: [{ id: 'b1', name: 'Marko', pin: '115071', hours: defaultHours, daysOff: [], blocked: [] }], bookings: [], services: defaultServices });
+const PINS = { b1: 'resnik12' };   // applied on every start unless the barber changed it himself in admin (BARBER_PIN env overrides)
+const PIN_RE = /^[A-Za-z0-9]{4,20}$/;
+const seed = () => ({
+  barbers: [{ id: 'b1', name: 'Biser', pin: PINS.b1, hours: defaultHours(), daysOff: [], blocked: [] }],
+  bookings: [], services: defaultServices });
 
 async function upstash(cmd) {
   const r = await fetch(UP_URL, { method: 'POST', headers: { Authorization: 'Bearer ' + UP_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd) });
@@ -48,8 +50,9 @@ async function init() {
   db.services = db.services || defaultServices;
   db.bookings = db.bookings.filter(b => b.date >= old);                   // keep storage small
   db.barbers.forEach(b => { b.blocked = (b.blocked || []).filter(x => x.date >= today); b.daysOff = b.daysOff.filter(d => d >= today); });
-  const pin = process.env.BARBER_PIN || '115071';                           // BARBER_PIN env var overrides the default
-  if (/^\d{4,12}$/.test(pin)) db.barbers[0].pin = pin;
+  db.barbers.forEach(b => { if (PINS[b.id] && !b.pinChanged) b.pin = PINS[b.id]; });   // a PIN the barber changed himself is never overwritten
+  const pin = process.env.BARBER_PIN;                                       // optional: BARBER_PIN env var sets one PIN for every barber
+  if (pin && PIN_RE.test(pin)) db.barbers.forEach(b => { if (!b.pinChanged) b.pin = pin; });
   await save();
   console.log('Telegram:', process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID ? 'configured (chat ' + process.env.TELEGRAM_CHAT_ID.trim() + ')' : 'NOT configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)');
   console.log('Storage:', UP_URL && UP_TOKEN ? 'Upstash (online)' : DATA);
@@ -158,7 +161,7 @@ const server = http.createServer(async (req, res) => {
       const booking = { id: crypto.randomUUID(), barberId: b.id, date: d.date, time: d.time, name, phone, serviceId: svc.id, service: svc.name, price: svc.price, cancelToken: crypto.randomBytes(16).toString('hex'), createdAt: new Date().toISOString() };
       db.bookings.push(booking);
       try { await save(); } catch (e) { db.bookings = db.bookings.filter(x => x.id !== booking.id); return send(res, 503, { error: 'Greška pri čuvanju termina. Pokušajte ponovo.' }); }
-      notify(`🆕 Novi termin\n${niceDate(booking.date)} u ${booking.time}\n${name} · ${phone}\n${svc.name} (${svc.price} din)`);
+      notify(`🆕 Novi termin · ${b.name}\n${niceDate(booking.date)} u ${booking.time}\n${name} · ${phone}\n${svc.name} (${svc.price} din)`);
       return send(res, 200, { ok: true, token: booking.cancelToken, booking: { date: booking.date, time: booking.time, name: booking.name, barber: b.name, service: svc.name, price: svc.price } });
     }
 
@@ -172,7 +175,7 @@ const server = http.createServer(async (req, res) => {
       const d = await body(req), b = findByToken(d.token);
       if (!b) return send(res, 404, { error: 'Termin nije pronađen ili je već otkazan.' });
       db.bookings = db.bookings.filter(x => x !== b); await save();
-      notify(`❌ Klijent otkazao termin\n${niceDate(b.date)} u ${b.time}\n${b.name} · ${b.phone}${b.service ? '\n' + b.service : ''}`);
+      notify(`❌ Klijent otkazao termin · ${(db.barbers.find(x => x.id === b.barberId) || {}).name || ''}\n${niceDate(b.date)} u ${b.time}\n${b.name} · ${b.phone}${b.service ? '\n' + b.service : ''}`);
       return send(res, 200, { ok: true });
     }
 
@@ -207,6 +210,15 @@ const server = http.createServer(async (req, res) => {
           hours[i] = [h[0], h[1]];
         }
         me.hours = hours; await save(); return send(res, 200, { ok: true });
+      }
+      if (p === '/api/admin/pin' && req.method === 'POST') {
+        const d = await body(req), lk = 'pin:' + me.id;
+        if (isLocked(lk)) return send(res, 429, { error: 'Previše pogrešnih pokušaja. Pokušajte ponovo za 15 minuta.' });
+        if (String(d.oldPin) !== me.pin) { addFail(lk, 5); return send(res, 401, { error: 'Trenutni PIN nije tačan.' }); }
+        if (!PIN_RE.test(String(d.newPin))) return send(res, 400, { error: 'Novi PIN mora imati 4 do 20 slova ili cifara (bez razmaka).' });
+        fails.delete(lk);
+        me.pin = String(d.newPin); me.pinChanged = true;
+        await save(); return send(res, 200, { ok: true });
       }
       if (p === '/api/admin/dayoff' && req.method === 'POST') {
         const d = await body(req);
