@@ -1,0 +1,17 @@
+<!doctype html><html lang="bs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Barber Frki - Otkaži termin</title><link rel="stylesheet" href="/style.css"></head><body><div class="wrap">
+<img class="logo" src="/logo.png" alt="Barber Frki">
+<h1>Otkazivanje termina</h1>
+<div class="card" id="box"><span class="empty">Učitavanje…</span></div>
+<p class="sub" style="margin-top:24px"><a href="/" style="color:var(--mute)">Zakaži novi termin</a></p></div>
+<script>
+const $=id=>document.getElementById(id),t=new URLSearchParams(location.search).get('t')||'';
+const fmt=d=>{const x=new Date(d+'T12:00:00Z');return ['Ned','Pon','Uto','Sri','Čet','Pet','Sub'][x.getUTCDay()]+', '+x.getUTCDate()+'. '+['jan','feb','mar','apr','maj','jun','jul','aug','sep','okt','nov','dec'][x.getUTCMonth()]};
+(async()=>{const r=await fetch('/api/booking?t='+encodeURIComponent(t));const d=await r.json();
+ if(!r.ok){$('box').textContent=d.error;return}
+ $('box').innerHTML='<p style="margin-top:0"></p><div class="err" id="e"></div><button class="main" id="c">Otkaži termin</button>';
+ $('box').firstChild.textContent=d.name+', imate termin kod '+d.barber+': '+fmt(d.date)+' u '+d.time+(d.service?' ('+d.service+')':'')+'.';
+ $('c').onclick=async()=>{if(!confirm('Sigurno otkazati termin?'))return;$('c').disabled=true;
+  const r=await fetch('/api/cancel',{method:'POST',body:JSON.stringify({token:t})});const j=await r.json();
+  if(r.ok){try{localStorage.removeItem('myBooking')}catch(e){}$('box').textContent='Termin je otkazan.'}else{$('e').textContent=j.error;$('c').disabled=false}}})();
+</script></body></html>

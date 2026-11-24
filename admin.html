@@ -1,0 +1,88 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Barber Frki - Admin</title><link rel="stylesheet" href="/style.css"><link rel="manifest" href="/manifest.json"><meta name="theme-color" content="#111111"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Barber"></head><body><div class="wrap">
+<img class="logo" src="/logo.png" alt="Barber Frki - Barber Shop"><h1>Admin panel</h1>
+<div id="login"><p class="sub">Prijavite se sa imenom i PIN-om.</p>
+<div class="row" id="who" style="margin:12px 0"></div><input id="pin" type="password" inputmode="numeric" placeholder="PIN"><div class="err" id="lerr"></div><button class="main" id="lgo">Prijava</button></div>
+<div id="panel" hidden>
+<p class="sub">Zdravo <b id="me"></b> · <button class="link" id="out">Odjava</button> · <a href="/" style="color:var(--mute)">Stranica za klijente</a></p>
+<h2>Kalendar termina</h2><div class="card">
+<div class="cal-head"><button class="chip sm" id="cprev">‹</button><b id="ctitle"></b><button class="chip sm" id="cnext">›</button></div>
+<div class="cal-grid" id="cgrid"></div>
+<p class="sub" style="text-align:left;margin:10px 0 0;font-size:13px"><span style="color:var(--gold)">●</span> ima termina</p></div>
+<h2 id="dtitle">Termini</h2><div class="card" id="dlist"></div>
+<h2>Zatvori pojedinačne termine</h2><div class="card"><p class="sub" style="text-align:left;margin:0 0 10px">Izaberi datum pa dodirni slobodan termin da ga zatvoriš (klijenti ga neće vidjeti). Dodirni zatvoren termin da ga ponovo otvoriš.</p>
+<input type="date" id="dsel" style="margin-bottom:10px"><div class="row" id="dslots"></div><div class="err" id="derr"></div>
+<p class="sub" style="text-align:left;margin:10px 0 0;font-size:13px">⬜ slobodan &nbsp; <span style="color:#c98a84">▭ zatvoren</span> &nbsp; <span style="color:var(--gold)">● zakazan</span></p></div>
+<h2>Radno vrijeme</h2><div class="card"><div id="hours"></div><div class="err" id="herr"></div><button class="main" id="hsave" style="margin-top:12px">Sačuvaj</button></div>
+<h2>Slobodni dani</h2><div class="card"><div class="row" style="align-items:center"><input type="date" id="off"><button class="chip sm" id="offadd">Dodaj slobodan dan</button></div><div id="offs" style="margin-top:10px"></div></div>
+</div></div>
+<script>
+const $=id=>document.getElementById(id);let token=sessionStorage.getItem('t'),who=null,D=null,cur=null,selDate=null;
+const names=['Nedjelja','Ponedjeljak','Utorak','Srijeda','Četvrtak','Petak','Subota'],order=[1,2,3,4,5,6,0];
+const fmtDate=d=>{const x=new Date(d+'T12:00:00Z');return ['Ned','Pon','Uto','Sri','Čet','Pet','Sub'][x.getUTCDay()]+', '+x.getUTCDate()+'. '+['jan','feb','mar','apr','maj','jun','jul','aug','sep','okt','nov','dec'][x.getUTCMonth()]};
+const intl=p=>{let d=String(p).trim();if(d.startsWith('+'))return d.replace(/\D/g,'');d=d.replace(/\D/g,'');if(d.startsWith('00'))return d.slice(2);if(d.startsWith('0'))return '381'+d.slice(1);return d};
+const api=async(p,body)=>{const r=await fetch(p,{method:body?'POST':'GET',headers:{Authorization:'Bearer '+token},body:body?JSON.stringify(body):undefined});
+ if(r.status===401&&token){sessionStorage.removeItem('t');location.reload()}return {ok:r.ok,d:await r.json()}};
+(async()=>{const c=await (await fetch('/api/barbers')).json();
+ c.barbers.forEach(b=>{const e=document.createElement('button');e.className='chip';e.textContent=b.name;e.onclick=()=>{who=b.id;[...$('who').children].forEach(x=>x.classList.remove('on'));e.classList.add('on')};$('who').append(e)});
+ if(c.barbers.length===1)$('who').firstChild.click();if(token)load()})();
+$('lgo').onclick=async()=>{$('lerr').textContent='';if(!who)return $('lerr').textContent='Izaberite ime.';let r;try{r=await fetch('/api/admin/login',{method:'POST',body:JSON.stringify({barberId:who,pin:$('pin').value})})}catch(e){return $('lerr').textContent='Nema veze sa serverom.'}const d=await r.json();
+ if(!r.ok)return $('lerr').textContent=d.error;token=d.token;sessionStorage.setItem('t',token);load()};
+$('out').onclick=()=>{sessionStorage.removeItem('t');location.reload()};
+async function load(){const {ok,d}=await api('/api/admin/me');if(!ok)return;$('login').hidden=true;$('panel').hidden=false;$('me').textContent=d.name;$('dsel').min=d.today;if(!$('dsel').value)$('dsel').value=d.today;loadDay();
+ D=d;renderCal();
+ $('hours').innerHTML='';order.forEach(i=>{const h=d.hours[i];const r=document.createElement('div');r.className='day';
+  r.innerHTML=`<b>${names[i]}</b><label><input type="checkbox" ${h?'checked':''} style="width:auto;margin:0"> Radi</label><input type="time" value="${h?h[0]:'11:00'}"> do <input type="time" value="${h?h[1]:'20:00'}">`;r.dataset.i=i;$('hours').append(r)});
+ $('offs').innerHTML=d.daysOff.length?'':'<span class="empty">Nema</span>';
+ d.daysOff.sort().forEach(x=>{const r=document.createElement('div');r.className='bk';r.innerHTML=`<span>${fmtDate(x)}</span>`;const b=document.createElement('button');b.className='chip sm';b.textContent='Ukloni';b.onclick=async()=>{await api('/api/admin/dayoff',{date:x,off:false});load()};r.append(b);$('offs').append(r)})}
+
+
+const pad=n=>String(n).padStart(2,'0'),MN=['Januar','Februar','Mart','April','Maj','Jun','Jul','Avgust','Septembar','Oktobar','Novembar','Decembar'];
+const wdOf=d=>new Date(d+'T12:00:00Z').getUTCDay();
+function bookingRow(b){const r=document.createElement('div');r.className='bk';r.style.alignItems='flex-start';
+  const n=intl(b.phone),msg=`Zdravo ${b.name}, vaš termin u Barber Frki je potvrđen: ${fmtDate(b.date)} u ${b.time}${b.service?' ('+b.service+')':''}. Adresa: Vojvode Mišića 112, Obrenovac. Vidimo se!`;
+  r.innerHTML=`<div><b></b><br><small></small><div class="cts"></div></div>`;
+  r.querySelector('b').textContent=b.time+' · '+b.name;
+  r.querySelector('small').textContent=b.phone+(b.service?` · ${b.service} (${b.price} din)`:'');
+  const cts=r.querySelector('.cts');
+  const add=(t,h,fn)=>{const l=document.createElement('a');l.textContent=t;l.href=h;if(fn)l.onclick=fn;cts.append(l)};
+  if(n){add('Pozovi','tel:+'+n);add('WhatsApp','https://wa.me/'+n+'?text='+encodeURIComponent(msg));
+   add('Viber','viber://chat?number=%2B'+n,()=>{try{navigator.clipboard.writeText(msg)}catch(e){}});add('SMS','sms:+'+n+'?&body='+encodeURIComponent(msg))}
+  const x=document.createElement('button');x.className='chip sm';x.textContent='Otkaži';
+  x.onclick=async()=>{if(confirm('Otkazati ovaj termin?')){await api('/api/admin/cancel',{id:b.id});load()}};r.append(x);return r}
+function renderCal(){
+ if(!cur){cur=D.today.slice(0,7);selDate=D.today}
+ const by={};D.bookings.forEach(b=>(by[b.date]=by[b.date]||[]).push(b));
+ const [y,m]=cur.split('-').map(Number),days=new Date(Date.UTC(y,m,0)).getUTCDate(),off=(new Date(Date.UTC(y,m-1,1,12)).getUTCDay()+6)%7;
+ $('ctitle').textContent=MN[m-1]+' '+y;$('cprev').disabled=cur<=D.today.slice(0,7);
+ const g=$('cgrid');g.innerHTML='';['Pon','Uto','Sri','Čet','Pet','Sub','Ned'].forEach(x=>{const e=document.createElement('div');e.className='cal-w';e.textContent=x;g.append(e)});
+ for(let i=0;i<off;i++)g.append(document.createElement('div'));
+ for(let d=1;d<=days;d++){const ds=`${y}-${pad(m)}-${pad(d)}`,n=(by[ds]||[]).length,closed=ds<D.today||!D.hours[wdOf(ds)]||D.daysOff.includes(ds);
+  const c=document.createElement('button');c.className='cal-c'+(ds===D.today?' today':'')+(ds===selDate?' sel':'')+(closed?' off':'')+(n?' has':'');
+  c.innerHTML='<span></span><i></i>';c.children[0].textContent=d;c.children[1].textContent=n?n:'';
+  c.onclick=()=>{selDate=ds;renderCal()};g.append(c)}
+ renderDay(by[selDate]||[])}
+function renderDay(list){const L=$('dlist');L.innerHTML='';const h=D.hours[wdOf(selDate)];
+ $('dtitle').textContent=fmtDate(selDate)+(list.length?' · '+list.length+' '+(list.length===1?'termin':'termina'):'');
+ if(selDate<D.today){L.innerHTML='<span class="empty">Prošao dan.</span>';return}
+ if(D.daysOff.includes(selDate)||!h){L.innerHTML='<span class="empty">Slobodan dan, ne radi se.</span>';return}
+ const bt={};list.forEach(b=>bt[b.time]=b);
+ const tm=t=>+t.slice(0,2)*60+ +t.slice(3);
+ for(let t=tm(h[0]);t+30<=tm(h[1]);t+=30){const ts=pad(Math.floor(t/60))+':'+pad(t%60);
+  if(bt[ts])L.append(bookingRow(bt[ts]));
+  else{const r=document.createElement('div');r.className='bk free';r.innerHTML='<span></span><small>slobodno</small>';r.firstChild.textContent=ts;L.append(r)}}}
+$('cprev').onclick=()=>{const [y,m]=cur.split('-').map(Number),d=new Date(Date.UTC(y,m-2,1));cur=d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1);renderCal()};
+$('cnext').onclick=()=>{const [y,m]=cur.split('-').map(Number),d=new Date(Date.UTC(y,m,1));cur=d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1);renderCal()};
+
+async function loadDay(){const date=$('dsel').value;$('derr').textContent='';$('dslots').innerHTML='';if(!date)return;
+ const {ok,d}=await api('/api/admin/day?date='+date);if(!ok)return $('derr').textContent=d.error||'Greška';
+ if(!d.slots.length){$('dslots').innerHTML='<span class="empty">Taj dan nema termina (slobodan dan ili prošlo vrijeme).</span>';return}
+ d.slots.forEach(s=>{const b=document.createElement('button');b.className='chip sm '+(s.status==='closed'?'closed':s.status==='booked'?'booked':'');
+  b.textContent=s.time+(s.status==='booked'?' · '+s.name:'');
+  b.onclick=async()=>{if(s.status==='booked'){$('derr').textContent='Zakazano: '+s.name+' ('+s.phone+'). Otkaži ga gore u listi termina ako treba.';return}
+   const r=await api('/api/admin/block',{date,time:s.time,off:s.status==='free'});if(!r.ok)$('derr').textContent=r.d.error;loadDay()};$('dslots').append(b)})}
+$('dsel').onchange=loadDay;
+$('hsave').onclick=async()=>{const hours={};document.querySelectorAll('#hours .day').forEach(r=>{const[i,t]=[r.dataset.i,r.querySelectorAll('input')];hours[i]=t[0].checked?[t[1].value,t[2].value]:null});
+ const {ok,d}=await api('/api/admin/hours',{hours});$('herr').textContent=ok?'':d.error;if(ok){loadDay();$('hsave').textContent='Sačuvano ✔';setTimeout(()=>$('hsave').textContent='Sačuvaj',1500)}};
+$('offadd').onclick=async()=>{if(!$('off').value)return;await api('/api/admin/dayoff',{date:$('off').value,off:true});$('off').value='';load()};
+if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');</script></body></html>
